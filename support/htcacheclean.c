@@ -260,6 +260,84 @@ static apr_size_t round_up(apr_size_t val, apr_off_t round) {
     return val;
 }
 
+
+
+
+
+/*
+ *Copying Files
+ */
+
+static void copy_files(FILE *in,FILE *out) {
+    char ch;
+    while (1) {
+      ch = fgetc(in);
+ 
+      if (ch == EOF)
+         break;
+      else
+         putc(ch, out);
+   }
+}
+
+
+
+static void cache_copy(char *path, char *basename, apr_pool_t *pool){
+
+    apr_pool_t *p;
+    char *headerpath;
+    char *datapath;
+    char *outpath;
+    FILE *inFile,*outFile,*dataFile;
+    char ch = ' ';
+    int matchSoFar = -1;
+    char *searchText = "Content-Type: text/html";
+    int searchTextLen = 22;
+    int isData = 0;
+    int isHeader =0;
+    int start = -1;
+
+    apr_pool_create(&p, pool);
+    headerpath = apr_pstrcat(p, path, "/", basename, CACHE_HEADER_SUFFIX, NULL);
+    datapath = apr_pstrcat(p, path, "/", basename, CACHE_DATA_SUFFIX, NULL);
+    outpath="/home/krati/Output/Output.txt";
+
+    inFile = fopen(headerpath, "rt+, ccs=UTF-8");
+
+    outFile = fopen(outpath, "a");
+    dataFile = fopen(datapath,"r");
+
+
+    while(ch!='h'){
+        ch = fgetc(inFile);
+        start++;
+    }
+    if(ch==searchText[matchSoFar+1])
+        matchSoFar++;
+    while (1) {
+        ch = fgetc(inFile);
+        if(ch==searchText[matchSoFar+1])
+            matchSoFar++;
+        else
+            matchSoFar=-1;
+        if(matchSoFar==22) {
+            isData = 1;
+            break;
+        }
+        if (ch == EOF)
+            break;
+   }
+   fseek(inFile,start,SEEK_SET);
+   copy_files(inFile,outFile);
+   if(isData){
+   copy_files(dataFile,outFile);
+   }
+
+
+	
+}
+
+
 /*
  * delete parent directories
  */
@@ -365,6 +443,14 @@ static void delete_entry(char *path, char *basename, apr_off_t *nodes,
     apr_pool_create(&p, pool);
 
     nextpath = apr_pstrcat(p, path, "/", basename, CACHE_HEADER_SUFFIX, NULL);
+
+
+	//function aded
+	if(!dryrun){
+	 cache_copy(path,basename,p);
+	}
+
+
     if (dryrun) {
         apr_finfo_t finfo;
         if (!apr_stat(&finfo, nextpath, APR_FINFO_NLINK, p)) {
