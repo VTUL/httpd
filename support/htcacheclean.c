@@ -47,6 +47,12 @@
 #include <stdlib.h>
 #endif
 
+#include <stdio.h>
+#include<time.h>
+#include <uuid/uuid.h>
+#include <stdbool.h>
+#include<string.h>
+
 /* define the following for debugging */
 #undef DEBUG
 
@@ -114,6 +120,10 @@ static APR_RING_ENTRY(_entry) root; /* ENTRY ring anchor */
 
 /* short program name as called */
 static const char *shortname = "htcacheclean";
+static FILE *warc_current_file;
+static bool warc_write_ok;
+ 
+ typedef long wgint;
 
 /* what did we clean? */
 struct stats {
@@ -261,21 +271,169 @@ static apr_size_t round_up(apr_size_t val, apr_off_t round) {
 }
 
 
+/*
+*
+*Calculating timestamp
+*
+*/
+
+char *
+warc_timestamp (char *timestamp, size_t timestamp_size)
+{
+  time_t rawtime = time (NULL);
+  struct tm * timeinfo = gmtime (&rawtime);
+
+  if (strftime (timestamp, timestamp_size, "%Y-%m-%dT%H:%M:%SZ", timeinfo) == 0 && timestamp_size > 0)
+    *timestamp = 0;
+
+  return timestamp;
+}
+
+/*
+*Calculating uiud
+ */
+
+void
+warc_uuid_str (char *urn_str)
+{
+  char uuid_str[37]="58408070-633d-c690-e909-fec5c6efd5ba";
+  uuid_t record_id;
+
+  //uuid_generate (record_id);
+//  uuid_unparse (record_id, uuid_str);
+
+  sprintf (urn_str, "<urn:uuid:%s>", uuid_str);
+}
+
+static size_t
+warc_write_buffer (const char *buffer, size_t size)
+{
+
+    return fwrite (buffer, 1, size, warc_current_file);
+}
+
+
+static bool
+warc_write_string (const char *str)
+{
+  size_t n;
+
+  n = strlen (str);
+  if (n != warc_write_buffer (str, n))
+    warc_write_ok = false;
+
+  return warc_write_ok;
+}
+
+
+static bool
+warc_write_header (const char *name, const char *value)
+{
+  if (value)
+    {
+      warc_write_string (name);
+      warc_write_string (": ");
+      warc_write_string (value);
+      warc_write_string ("\r\n");
+    }
+  return true;
+}
+
+static bool
+warc_write_date_header (const char *timestamp)
+{
+  char current_timestamp[21];
+
+  return warc_write_header ("WARC-Date", timestamp ? timestamp :
+                            warc_timestamp (current_timestamp, sizeof(current_timestamp)));
+}
+
+
+static bool
+warc_write_block_from_file (FILE *data_in)
+{
+  /* Add the Content-Length header. */
+  char content_length[((sizeof(off_t) * 24082 / 10000) + 2)];
+  char buffer[BUFSIZ];
+  size_t s;
+
+  fseeko (data_in, 0L, SEEK_END);
+//  number_to_string (content_length, ftello (data_in));
+//  warc_write_header ("Content-Length", content_length);
+
+  /* End of the WARC header section. */
+ // warc_write_string ("\r\n");
+
+  if (fseeko (data_in, 0L, SEEK_SET) != 0)
+    warc_write_ok = false;
+
+  /* Copy the data in the file to the WARC record. */
+  while ((s = fread (buffer, 1, BUFSIZ, data_in)) > 0)
+    {
+      if (warc_write_buffer (buffer, s) < s)
+        warc_write_ok = false;
+    }
+
+  return warc_write_ok;
+}
+
+bool
+warc_write_response_record (FILE *body, const char *timestamp_str)
+{
+ 
+  char response_uuid [48];
+  off_t offset;
+  char c;
+
+      rewind (body);
+       
+  /* Not a revisit, just store the record. */
+
+  warc_uuid_str (response_uuid);
+  warc_current_file = fopen ("/home/krati/test.warc", "ab+");
+  fseeko (warc_current_file, 0L, SEEK_END);
+  offset = ftello (warc_current_file);
+
+  
+  warc_write_header ("WARC-Type", "response");
+  warc_write_header ("WARC-Record-ID", response_uuid);
+
+  warc_write_date_header (timestamp_str);
+ 
+  warc_write_header ("Content-Type", "application/http;msgtype=response");
+  rewind(body);
+//  if (body) {
+//    while ((c = getc(body)) != EOF)
+//        printf("%c",c);
+//    
+//}
+//  
+//    rewind(body);
+  warc_write_block_from_file (body);
+  
+    warc_write_buffer ("\r\n\r\n", 4);
+ fclose (warc_current_file);
+
+  fclose (body);
+
+  return warc_write_ok;
+}
+
 
 /*
  *Copying Files
  */
 
 static void copy_files(FILE *in,FILE *out) {
-    char ch;
-    while (1) {
-      ch = fgetc(in);
- 
-      if (ch == EOF)
-         break;
-      else
-         putc(ch, out);
-   }
+    unsigned char buff[8192];
+   size_t n, m;
+do {
+    n = fread(buff, 1, sizeof buff, in);
+    if (n) m = fwrite(buff, 1, n, out);
+    else   m = 0;
+} while ((n > 0) && (n == m));
+
+
 }
 
 
@@ -285,53 +443,36 @@ static void cache_copy(char *path, char *basename, apr_pool_t *pool){
     char *headerpath;
     char *datapath;
     char *outpath;
-    FILE *inFile,*outFile,*dataFile;
+    FILE *inFile,*outFile,*dataFile,*body;
     char ch = ' ';
-    int matchSoFar = -1;
-    char *searchText = "Content-Type: text/html";
-    int searchTextLen = 22;
-    int isData = 0;
-    int isHeader =0;
     int start = -1;
+
+    char *timestamp = (char *)malloc(22*sizeof(char));
 
     apr_pool_create(&p, pool);
     headerpath = apr_pstrcat(p, path, "/", basename, CACHE_HEADER_SUFFIX, NULL);
     datapath = apr_pstrcat(p, path, "/", basename, CACHE_DATA_SUFFIX, NULL);
     outpath="/home/krati/Output/Output.txt";
 
-    inFile = fopen(headerpath, "rt+, ccs=UTF-8");
+    inFile = fopen(headerpath, "rb+");
 
-    outFile = fopen(outpath, "a");
-    dataFile = fopen(datapath,"r");
-
+    outFile = fopen(outpath, "wb");
+    dataFile = fopen(datapath,"rb+");
 
     while(ch!='h'){
         ch = fgetc(inFile);
         start++;
     }
-    if(ch==searchText[matchSoFar+1])
-        matchSoFar++;
-    while (1) {
-        ch = fgetc(inFile);
-        if(ch==searchText[matchSoFar+1])
-            matchSoFar++;
-        else
-            matchSoFar=-1;
-        if(matchSoFar==22) {
-            isData = 1;
-            break;
-        }
-        if (ch == EOF)
-            break;
-   }
-   fseek(inFile,start,SEEK_SET);
+    fseek(inFile,start,SEEK_SET);
    copy_files(inFile,outFile);
-   if(isData){
+  
    copy_files(dataFile,outFile);
-   }
+   warc_timestamp(timestamp,22);
 
+  fclose(outFile);
+ body = fopen(outpath, "rb");
+   warc_write_response_record(body,timestamp);
 
-	
 }
 
 /*
@@ -440,11 +581,10 @@ static void delete_entry(char *path, char *basename, apr_off_t *nodes,
 
     nextpath = apr_pstrcat(p, path, "/", basename, CACHE_HEADER_SUFFIX, NULL);
 
-printf("before copying!!!!!!!!!**********************");
 	//function aded
-	if(!dryrun){
+	//if(!dryrun){
 	 cache_copy(path,basename,p);
-	}
+	//}
 
 
 
