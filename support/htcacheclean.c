@@ -296,11 +296,14 @@ warc_timestamp (char *timestamp, size_t timestamp_size)
 void
 warc_uuid_str (char *urn_str)
 {
-  char uuid_str[37]="58408070-633d-c690-e909-fec5c6efd5ba";
+  char *uuid_str=(char *)malloc(37*sizeof(char));;
+ 	     	
   uuid_t record_id;
 
-  //uuid_generate (record_id);
-//  uuid_unparse (record_id, uuid_str);
+  uuid_generate (record_id);
+ uuid_unparse (record_id, uuid_str);
+
+
 
   sprintf (urn_str, "<urn:uuid:%s>", uuid_str);
 }
@@ -358,11 +361,11 @@ warc_write_block_from_file (FILE *data_in)
   size_t s;
 
   fseeko (data_in, 0L, SEEK_END);
-//  number_to_string (content_length, ftello (data_in));
-//  warc_write_header ("Content-Length", content_length);
+  sprintf(content_length, "%d", ftello (data_in));
+  warc_write_header ("Content-Length", content_length);
 
   /* End of the WARC header section. */
- // warc_write_string ("\r\n");
+ warc_write_string ("\r\n");
 
   if (fseeko (data_in, 0L, SEEK_SET) != 0)
     warc_write_ok = false;
@@ -386,7 +389,7 @@ warc_write_response_record (FILE *body, const char *timestamp_str)
   char c;
 
       rewind (body);
-       
+
   /* Not a revisit, just store the record. */
 
   warc_uuid_str (response_uuid);
